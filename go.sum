@@ -6,6 +6,8 @@ github.com/clipperhouse/uax29/v2 v2.4.0 h1:RXqE/l5EiAbA4u97giimKNlmpvkmz+GrBVTel
 github.com/clipperhouse/uax29/v2 v2.4.0/go.mod h1:Wn1g7MK6OoeDT0vL+Q0SQLDz/KpfsVRgg6W7ihQeh4g=
 github.com/junegunn/fzf v0.67.0 h1:naiOdIkV5/ZCfHgKQIV/f5YDWowl95G6yyOQqW8FeSo=
 github.com/junegunn/fzf v0.67.0/go.mod h1:xlXX2/rmsccKQUnr9QOXPDi5DyV9cM0UjKy/huScBeE=
+github.com/kungfusheep/glyph v0.0.0-20260311230619-7020b7d3f9f3 h1:VDjKmA4i2X8hQUzjNB+IL+QhXdeDRtzNmq8YqPuObSw=
+github.com/kungfusheep/glyph v0.0.0-20260311230619-7020b7d3f9f3/go.mod h1:jlGW9hYjGHpMGXDeoNk0i5rlI7BWt8hQhpuyAHq21gI=
 github.com/kungfusheep/riffkey v0.0.0-20260216102013-df19649e3a0d h1:ff9WvfadD7BXE1fFl42eeJ4+Gn8gZolx4zFdzoIZvXk=
 github.com/kungfusheep/riffkey v0.0.0-20260216102013-df19649e3a0d/go.mod h1:s+DoFavosJjxGBTgWlhrDKwpsDk0iL7lg3919Fmh6Ys=
 github.com/mattn/go-isatty v0.0.20 h1:xfD0iDuEKnDkl03q4limB+vH+GxLEtL/jb4xVJSWWEY=

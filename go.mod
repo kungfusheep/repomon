@@ -2,7 +2,7 @@ module github.com/kungfusheep/repomon
 
 go 1.25.1
 
-require github.com/kungfusheep/glyph v0.0.0
+require github.com/kungfusheep/glyph v0.0.0-20260311230619-7020b7d3f9f3
 
 require (
 	github.com/BurntSushi/toml v1.6.0 // indirect
@@ -15,5 +15,3 @@ require (
 	github.com/rivo/uniseg v0.4.7 // indirect
 	golang.org/x/sys v0.40.0 // indirect
 )
-
-replace github.com/kungfusheep/glyph => ../tui

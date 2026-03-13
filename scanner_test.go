@@ -15,7 +15,7 @@ func setupTestRepo(t *testing.T) string {
 
 	cmds := [][]string{
 		{"git", "init"},
-		{"git", "config", "user.email", "test@test.com"},
+		{"git", "config", "user.email", "test@example.com"},
 		{"git", "config", "user.name", "Test"},
 	}
 
