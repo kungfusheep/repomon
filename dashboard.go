@@ -3,139 +3,199 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 
-	. "github.com/kungfusheep/forme"
+	. "github.com/kungfusheep/glyph"
 )
 
-// display row for AutoTable -- exported fields become columns
-type RepoRow struct {
-	Health string
-	Name   string
-	Branch string
-	Age    string
-	Dirty  string
-	Build  string
-	Tests  string
-	Sync   string
-	Lang   string
+type entry struct {
+	Key       string
+	Name      string
+	DimName   string // non-empty for non-session entries (dimmed)
+	BrightName string // non-empty for session entries (normal)
+	Branch    string
+	AmberInfo string // shown in amber when dirty or behind
+	DimInfo   string // shown dimmed when clean
+	Dirty     int
+	Ahead     int
+	Behind    int
+	IsSession bool
+	Path      string
+	LastMsg   string
+	Age       string
+	files     string
+	filesInit bool
+}
+
+type pvLine struct {
+	Normal string
+	Dimmed string
 }
 
 type dashboard struct {
-	app   *App
-	repos []Repo
+	entries []entry
+	result  *entry
+	fl      *FilterListC[entry]
 
-	// reactive state -- all pointer-backed, mutate and render
-	rows       []RepoRow
-	statusLine string
-	filterTab  int
-	tabs       []string
-	greenCount string
-	amberCount string
-	redCount   string
-	totalCount string
-	dirtyCount string
-	scanAge    string
+	preview []pvLine
+	status  string
 }
 
-func newDashboard(repos []Repo) *dashboard {
-	d := &dashboard{
-		repos: repos,
-		tabs:  []string{"All", "RED", "AMBER", "GREEN"},
+func runDashboard() {
+	d := &dashboard{}
+	d.loadTmuxSessions()
+
+	if err := d.run(); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %s\n", err)
+		os.Exit(1)
 	}
-	d.updateCounts()
-	d.applyFilter()
-	return d
+
+	d.switchTo()
 }
 
-func (d *dashboard) updateCounts() {
-	counts := map[Health]int{}
-	totalDirty := 0
-	for _, r := range d.repos {
-		counts[r.Health]++
-		totalDirty += r.DirtyCount()
-	}
-	d.totalCount = fmt.Sprintf("%d repos", len(d.repos))
-	d.greenCount = fmt.Sprintf("%d", counts[HealthGreen])
-	d.amberCount = fmt.Sprintf("%d", counts[HealthAmber])
-	d.redCount = fmt.Sprintf("%d", counts[HealthRed])
-	d.dirtyCount = fmt.Sprintf("%d uncommitted files", totalDirty)
-	d.scanAge = time.Now().Format("15:04:05")
-}
-
-func (d *dashboard) applyFilter() {
-	var filtered []Repo
-	switch d.filterTab {
-	case 0:
-		filtered = append(filtered, d.repos...)
-	case 1:
-		for _, r := range d.repos {
-			if r.Health == HealthRed {
-				filtered = append(filtered, r)
-			}
-		}
-	case 2:
-		for _, r := range d.repos {
-			if r.Health == HealthAmber {
-				filtered = append(filtered, r)
-			}
-		}
-	case 3:
-		for _, r := range d.repos {
-			if r.Health == HealthGreen {
-				filtered = append(filtered, r)
-			}
-		}
-	}
-
-	sort.Slice(filtered, func(i, j int) bool {
-		if filtered[i].Health != filtered[j].Health {
-			return filtered[i].Health > filtered[j].Health
-		}
-		return filtered[i].DirtyCount() > filtered[j].DirtyCount()
+// loadTmuxSessions populates entries from tmux sessions only. Instant.
+func (d *dashboard) loadTmuxSessions() {
+	sessions := getTmuxSessions()
+	sort.Slice(sessions, func(i, j int) bool {
+		return sessions[i].LastAttached > sessions[j].LastAttached
 	})
 
-	d.rows = make([]RepoRow, len(filtered))
-	for i, r := range filtered {
-		d.rows[i] = toRow(r)
+	d.entries = nil
+	for _, s := range sessions {
+		d.entries = append(d.entries, entry{
+			Key:        s.Name,
+			Name:       s.Name,
+			BrightName: s.Name,
+			IsSession:  true,
+			Path:       s.Path,
+		})
 	}
-	d.statusLine = fmt.Sprintf(" %d repos shown", len(filtered))
+
+	d.status = fmt.Sprintf("%d sessions · loading...", len(sessions))
 }
 
-func toRow(r Repo) RepoRow {
-	dirty := fmt.Sprintf("%d", r.DirtyCount())
-	if r.DirtyCount() == 0 {
-		dirty = "-"
-	}
-
-	sync := ""
-	if r.Ahead > 0 {
-		sync += fmt.Sprintf("+%d", r.Ahead)
-	}
-	if r.Behind > 0 {
-		if sync != "" {
-			sync += "/"
+// loadConfigEntries adds repos and directories from config. Runs in background.
+func (d *dashboard) loadConfigEntries() {
+	cfg, _ := loadConfig()
+	listedPaths := map[string]bool{}
+	for _, e := range d.entries {
+		if e.Path != "" {
+			listedPaths[normPath(e.Path)] = true
 		}
-		sync += fmt.Sprintf("-%d", r.Behind)
-	}
-	if sync == "" {
-		sync = "-"
 	}
 
-	return RepoRow{
-		Health: r.HealthStr(),
-		Name:   r.Name,
-		Branch: r.Branch,
-		Age:    r.AgeStr(),
-		Dirty:  dirty,
-		Build:  r.BuildStr(),
-		Tests:  r.TestStr(),
-		Sync:   sync,
-		Lang:   r.Language,
+	for _, r := range cfg.Repos {
+		np := normPath(r.Path)
+		if listedPaths[np] {
+			continue
+		}
+		listedPaths[np] = true
+		d.entries = append(d.entries, entry{
+			Key:     r.Path,
+			Name:    filepath.Base(r.Path),
+			DimName: filepath.Base(r.Path),
+			Path:    r.Path,
+		})
 	}
+
+	for _, root := range cfg.Roots {
+		for _, dir := range discoverDirs(root) {
+			if listedPaths[normPath(dir)] {
+				continue
+			}
+			listedPaths[normPath(dir)] = true
+			d.entries = append(d.entries, entry{
+				Key:     dir,
+				Name:    filepath.Base(dir),
+				DimName: filepath.Base(dir),
+				Path:    dir,
+			})
+		}
+	}
+}
+
+// applyRepos updates entries in place from a set of scanned repos.
+func (d *dashboard) applyRepos(repos []Repo) {
+	repoByPath := map[string]Repo{}
+	for _, r := range repos {
+		repoByPath[normPath(r.Path)] = r
+	}
+
+	totalDirty := 0
+	sessionCount := 0
+	for i := range d.entries {
+		e := &d.entries[i]
+		if e.IsSession {
+			sessionCount++
+		}
+		np := normPath(e.Path)
+		repo, ok := repoByPath[np]
+		if !ok {
+			continue
+		}
+		e.Branch = repo.Branch
+		e.Dirty = repo.DirtyCount()
+		e.Ahead = repo.Ahead
+		e.Behind = repo.Behind
+		e.LastMsg = repo.LastMsg
+		e.Age = repo.AgeStr()
+		info := buildInfoStr(repo)
+		if e.Dirty > 0 || e.Behind > 0 {
+			e.AmberInfo = "  " + info
+			e.DimInfo = ""
+		} else {
+			e.AmberInfo = ""
+			e.DimInfo = "  " + info
+		}
+		totalDirty += e.Dirty
+	}
+
+	d.status = fmt.Sprintf("%d sessions · %d repos · %d dirty files", sessionCount, len(repos), totalDirty)
+}
+
+// enrichFromCache loads cached scan results for instant display.
+func (d *dashboard) enrichFromCache() bool {
+	repos, ok := loadScanCache()
+	if !ok {
+		return false
+	}
+	d.applyRepos(repos)
+	return true
+}
+
+// enrichWithRepos scans repos live and updates entries in place.
+func (d *dashboard) enrichWithRepos() {
+	cfg, _ := loadConfig()
+	if len(cfg.Repos) == 0 {
+		return
+	}
+
+	paths := make([]string, len(cfg.Repos))
+	for i, r := range cfg.Repos {
+		paths[i] = r.Path
+	}
+	repos := scanRepos(paths, false)
+	saveScanCache(repos)
+	d.applyRepos(repos)
+}
+
+func buildInfoStr(r Repo) string {
+	var parts []string
+	parts = append(parts, r.Branch)
+	if r.Behind > 0 {
+		parts = append(parts, fmt.Sprintf("↓%d", r.Behind))
+	}
+	if r.Ahead > 0 {
+		parts = append(parts, fmt.Sprintf("↑%d", r.Ahead))
+	}
+	dirty := r.DirtyCount()
+	if dirty > 0 {
+		parts = append(parts, fmt.Sprintf("%d dirty", dirty))
+	}
+	return strings.Join(parts, " · ")
 }
 
 func (d *dashboard) run() error {
@@ -143,127 +203,178 @@ func (d *dashboard) run() error {
 	if err != nil {
 		return err
 	}
-	d.app = app
-	app.JumpKey("g")
 
-	headerStyle := Style{FG: Cyan, Attr: AttrBold}.Uppercase()
-	altStyle := Style{BG: PaletteColor(235)}
-	dimStyle := Style{FG: BrightBlack}
+	dim := Style{FG: BrightBlack}
+	amber := Style{FG: RGB(180, 150, 80)}
+	selStyle := Style{BG: RGB(40, 40, 40)}
 
-	app.SetView(VBox(
-		HBox.MarginXY(0, 1).Gap(2)(
-			Text("repomon").Bold().FG(Cyan),
-			Space(),
-			Text(&d.scanAge).Style(dimStyle),
-		),
+	d.fl = FilterList(&d.entries, func(e *entry) string { return e.Name }).
+		Placeholder("search...").
+		MaxVisible(40).
+		SelectedStyle(selStyle).
+		Render(func(e *entry) any {
+			return HBox(
+				Text(&e.BrightName),
+				Text(&e.DimName).Style(dim),
+				Text(&e.AmberInfo).Style(amber),
+				Text(&e.DimInfo).Style(dim),
+			)
+		}).
+		Handle("<Enter>", func(e *entry) {
+			d.result = e
+			app.Stop()
+		}).
+		HandleClear("<Escape>", app.Stop)
 
-		HBox.Margin(1).Gap(3)(
-			Leader("repos", &d.totalCount).Width(18),
-			Leader("green", &d.greenCount).Width(12),
-			Leader("amber", &d.amberCount).Width(12),
-			Leader("red", &d.redCount).Width(10),
-			Leader("dirty", &d.dirtyCount).Width(28),
-		),
+	app.OnBeforeRender(func() {
+		d.updatePreview()
+	})
 
-		SpaceH(1),
-
-		Tabs(d.tabs, &d.filterTab).
-			Style(TabsStyleBox).
-			Gap(1).
-			ActiveStyle(Style{FG: Cyan, Attr: AttrBold}).
-			InactiveStyle(Style{FG: BrightBlack}),
-
-		SpaceH(1),
-
+	app.SetView(
 		VBox.Grow(1)(
-			AutoTable(&d.rows).
-				HeaderStyle(headerStyle).
-				AltRowStyle(altStyle).
-				Gap(2).
-				Sortable(),
+			HBox.MarginVH(0, 1)(
+				Text("repomon").Bold(),
+				Space(),
+				Text("ctrl-f:fetch  ctrl-r:pull  ctrl-x:kill").Style(dim),
+			),
+			HBox.Grow(1)(
+				VBox.WidthPct(0.55)(d.fl),
+				VBox.WidthPct(0.45).MarginVH(0, 2)(
+					ForEach(&d.preview, func(l *pvLine) any {
+						return Textf(&l.Normal, Dim(&l.Dimmed))
+					}),
+				),
+			),
+			HBox.MarginVH(0, 1)(
+				Text(&d.status).Style(dim),
+			),
 		),
+	)
 
-		HBox(
-			Text(&d.statusLine).Dim(),
-			Space(),
-			Text("1-4:filter  g:jump/sort  r:rescan  e:export  q:quit").Dim(),
-		),
-	)).
-		Handle("q", app.Stop).
-		Handle("<Esc>", app.Stop).
-		Handle("1", func() { d.filterTab = 0; d.applyFilter() }).
-		Handle("2", func() { d.filterTab = 1; d.applyFilter() }).
-		Handle("3", func() { d.filterTab = 2; d.applyFilter() }).
-		Handle("4", func() { d.filterTab = 3; d.applyFilter() }).
-		Handle("<Tab>", func() {
-			d.filterTab = (d.filterTab + 1) % len(d.tabs)
-			d.applyFilter()
-		}).
-		Handle("<S-Tab>", func() {
-			d.filterTab = (d.filterTab - 1 + len(d.tabs)) % len(d.tabs)
-			d.applyFilter()
-		}).
-		Handle("r", func() { d.rescan() }).
-		Handle("e", func() { d.export() })
+	app.Handle("<A-p>", app.Stop)
+	app.Handle("<C-c>", app.Stop)
+	app.Handle("<C-f>", func() { d.doAction("fetch", app) })
+	app.Handle("<C-r>", func() { d.doAction("pull", app) })
+	app.Handle("<C-x>", func() { d.doAction("kill", app) })
+
+	go func() {
+		// phase 1: add config entries + enrich from cache (fast)
+		d.loadConfigEntries()
+		d.enrichFromCache()
+		d.fl.Refresh()
+		app.RequestRender()
+
+		// phase 2: fresh scan (slow, updates cache)
+		d.enrichWithRepos()
+		d.fl.Refresh()
+		app.RequestRender()
+	}()
 
 	return app.Run()
 }
 
-func (d *dashboard) rescan() {
-	d.statusLine = " scanning..."
-	d.app.RequestRender()
+func (d *dashboard) updatePreview() {
+	sel := d.fl.Selected()
+	if sel == nil {
+		d.preview = d.preview[:0]
+		return
+	}
+
+	d.preview = d.preview[:0]
+
+	if sel.Branch != "" {
+		d.preview = append(d.preview, pvLine{Normal: "branch  " + sel.Branch})
+	} else {
+		d.preview = append(d.preview, pvLine{Normal: sel.Path})
+	}
+
+	if sel.LastMsg != "" {
+		d.preview = append(d.preview, pvLine{Dimmed: "commit  " + sel.Age + " - " + sel.LastMsg})
+	}
+
+	d.preview = append(d.preview, pvLine{}) // spacer
+
+	if sel.Behind > 0 {
+		d.preview = append(d.preview, pvLine{Normal: fmt.Sprintf("↓ %d behind upstream", sel.Behind)})
+	}
+	if sel.Ahead > 0 {
+		d.preview = append(d.preview, pvLine{Normal: fmt.Sprintf("↑ %d ahead (unpushed)", sel.Ahead)})
+	}
+
+	if sel.Dirty > 0 {
+		d.preview = append(d.preview, pvLine{}) // spacer
+		d.preview = append(d.preview, pvLine{Normal: fmt.Sprintf("%d dirty files:", sel.Dirty)})
+
+		if !sel.filesInit && sel.Path != "" {
+			sel.files = run(sel.Path, "git", "status", "--porcelain")
+			sel.filesInit = true
+		}
+		shown := 0
+		for _, line := range strings.Split(strings.TrimSpace(sel.files), "\n") {
+			if len(line) < 3 {
+				continue
+			}
+			status := strings.TrimRight(line[:2], " ")
+			name := strings.TrimSpace(line[2:])
+			d.preview = append(d.preview, pvLine{Dimmed: "  " + status + " " + name})
+			shown++
+			if shown >= 12 {
+				d.preview = append(d.preview, pvLine{Dimmed: fmt.Sprintf("  +%d more", sel.Dirty-shown)})
+				break
+			}
+		}
+	}
+}
+
+func (d *dashboard) doAction(verb string, app *App) {
+	sel := d.fl.Selected()
+	if sel == nil {
+		return
+	}
+
+	d.status = verb + "..."
 
 	go func() {
-		paths := make([]string, len(d.repos))
-		for i, r := range d.repos {
-			paths[i] = r.Path
+		path := sel.Path
+		if path == "" && sel.IsSession {
+			path = resolveKeyToPath(sel.Key)
 		}
-		d.repos = scanRepos(paths, false)
-		d.updateCounts()
-		d.applyFilter()
-		d.statusLine = fmt.Sprintf(" rescanned at %s", time.Now().Format("15:04:05"))
-		d.app.RequestRender()
+
+		switch verb {
+		case "fetch":
+			if path != "" {
+				run(path, "git", "fetch", "--all", "--prune")
+			}
+		case "pull":
+			if path != "" {
+				run(path, "git", "pull")
+			}
+		case "kill":
+			exec.Command("tmux", "kill-session", "-t", sel.Key).Run()
+		}
+
+		d.enrichWithRepos()
+		d.fl.Refresh()
+		d.status = verb + " done"
+		app.RequestRender()
 	}()
 }
 
-func (d *dashboard) export() {
-	md := exportMarkdown(d.repos)
-	home := expandHome("~")
-	path := home + "/.config/repomon/export.md"
-	if err := writeExportFile(path, md); err != nil {
-		d.statusLine = fmt.Sprintf(" export failed: %s", err)
-	} else {
-		d.statusLine = fmt.Sprintf(" exported to %s", path)
+func (d *dashboard) switchTo() {
+	if d.result == nil {
+		return
 	}
-}
 
-func writeExportFile(path, content string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return err
-	}
-	return os.WriteFile(path, []byte(content), 0644)
-}
+	key := d.result.Key
 
-func buildRepoSummary(r Repo) string {
-	var parts []string
+	if d.result.IsSession {
+		exec.Command("tmux", "switch-client", "-t", key).Run()
+		return
+	}
 
-	if r.Error != "" {
-		return r.Error
+	sessionKey := strings.ReplaceAll(filepath.Base(key), ".", "_")
+	if exec.Command("tmux", "has-session", "-t", sessionKey).Run() != nil {
+		exec.Command("tmux", "new-session", "-d", "-s", sessionKey, "-c", key).Run()
 	}
-	if r.DirtyCount() > 0 {
-		parts = append(parts, fmt.Sprintf("%d dirty", r.DirtyCount()))
-	}
-	if r.Builds != nil && !*r.Builds {
-		parts = append(parts, "build failing")
-	}
-	if r.TestsPass != nil && !*r.TestsPass {
-		parts = append(parts, "tests failing")
-	}
-	if r.LastCommit.IsZero() {
-		parts = append(parts, "never committed")
-	}
-	if len(parts) == 0 {
-		return "clean"
-	}
-	return strings.Join(parts, ", ")
+	exec.Command("tmux", "switch-client", "-t", sessionKey).Run()
 }

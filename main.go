@@ -10,14 +10,29 @@ func main() {
 	args := os.Args[1:]
 
 	switch {
+	case contains(args, "--cache"):
+		runCache()
+	case contains(args, "--preview"):
+		key := flagValue(args, "--preview")
+		runPreview(key)
+	case contains(args, "--action"):
+		// --action <verb> <key>
+		vals := flagValues(args, "--action")
+		if len(vals) >= 2 {
+			runAction(vals[0], vals[1])
+		}
 	case contains(args, "--discover"):
 		runDiscover(args)
 	case contains(args, "--export"):
 		runExport(args)
+	case contains(args, "--install-cron"):
+		installCron()
+	case contains(args, "--uninstall-cron"):
+		uninstallCron()
 	case contains(args, "--help") || contains(args, "-h"):
 		printUsage()
 	default:
-		runDashboard(args)
+		runDashboard()
 	}
 }
 
@@ -25,6 +40,12 @@ func runDiscover(args []string) {
 	roots := flagValues(args, "--discover")
 	if len(roots) == 0 {
 		roots = []string{"~/code"}
+	}
+
+	// expand ~ in roots so the config stores absolute paths
+	expanded := make([]string, len(roots))
+	for i, r := range roots {
+		expanded[i] = expandHome(r)
 	}
 
 	var all []string
@@ -40,7 +61,7 @@ func runDiscover(args []string) {
 		cfgRepos = append(cfgRepos, RepoConfig{Path: p})
 	}
 
-	if err := saveConfig(Config{Repos: cfgRepos}); err != nil {
+	if err := saveConfig(Config{Roots: expanded, Repos: cfgRepos}); err != nil {
 		fmt.Fprintf(os.Stderr, "error saving config: %s\n", err)
 		os.Exit(1)
 	}
@@ -65,15 +86,6 @@ func runExport(args []string) {
 	fmt.Fprintf(os.Stderr, "exported to %s\n", outPath)
 }
 
-func runDashboard(args []string) {
-	repos := loadAndScan(contains(args, "--build"))
-	d := newDashboard(repos)
-	if err := d.run(); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %s\n", err)
-		os.Exit(1)
-	}
-}
-
 func loadAndScan(runBuild bool) []Repo {
 	cfg, err := loadConfig()
 	if err != nil {
@@ -94,17 +106,21 @@ func printUsage() {
 	fmt.Println(`repomon -- repo health monitor
 
 usage:
-  repomon                     launch TUI dashboard
-  repomon --build             launch TUI with build/test checks (slower)
-  repomon --export            export markdown to stdout
-  repomon --export --output FILE  export to file
-  repomon --discover ~/code   discover repos and save config
+  repomon --cache                  build tmux session cache (fast, for fzf switcher)
+  repomon --export                 export markdown to stdout
+  repomon --export --output FILE   export to file
+  repomon --discover ~/code [...]  discover repos and save config
+  repomon --install-cron           install launchd job for periodic cache refresh
+  repomon --uninstall-cron         remove launchd job
 
 flags:
-  --build     run go build/test checks (default: git-only, fast)
-  --discover  scan directories for git repos and save config
-  --export    output markdown report instead of TUI
-  --output    file path for export (default: stdout)`)
+  --cache           scan repos + tmux sessions, write colored cache for fzf
+  --build           run go build/test checks with --export (default: git-only, fast)
+  --discover        scan directories for git repos and save config
+  --export          output markdown report instead of TUI
+  --output          file path for export (default: stdout)
+  --install-cron    install a launchd plist that refreshes cache every 5 minutes
+  --uninstall-cron  unload and remove the launchd plist`)
 }
 
 func contains(args []string, flag string) bool {

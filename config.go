@@ -9,6 +9,7 @@ import (
 )
 
 type Config struct {
+	Roots []string     `json:"roots,omitempty"` // directories scanned by --discover
 	Repos []RepoConfig `json:"repos"`
 }
 
@@ -86,6 +87,29 @@ func discoverRepos(root string) []string {
 
 	sort.Strings(repos)
 	return repos
+}
+
+// discoverDirs returns all top-level directories under root (not just git repos)
+func discoverDirs(root string) []string {
+	root = expandHome(root)
+	var dirs []string
+
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return dirs
+	}
+
+	for _, e := range entries {
+		if !e.IsDir() || e.Name()[0] == '.' || skipDirs[e.Name()] {
+			continue
+		}
+		if strings.Contains(e.Name(), "@") {
+			continue
+		}
+		dirs = append(dirs, filepath.Join(root, e.Name()))
+	}
+
+	return dirs
 }
 
 func isGitRepo(path string) bool {
