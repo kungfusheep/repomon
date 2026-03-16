@@ -24,6 +24,7 @@ type entry struct {
 	Behind    int
 	IsSession bool
 	Path      string
+	Remote    string
 	LastMsg   string
 	Age       string
 	files     string
@@ -136,6 +137,7 @@ func (d *dashboard) applyRepos(repos []Repo) {
 		if !ok {
 			continue
 		}
+		e.Remote = repo.Remote
 		e.Branch = repo.Branch
 		e.Dirty = repo.DirtyCount()
 		e.Ahead = repo.Ahead
@@ -169,14 +171,33 @@ func (d *dashboard) enrichFromCache() bool {
 // enrichWithRepos scans repos live and updates entries in place.
 func (d *dashboard) enrichWithRepos() {
 	cfg, _ := loadConfig()
-	if len(cfg.Repos) == 0 {
+
+	seen := map[string]bool{}
+	var paths []string
+	for _, r := range cfg.Repos {
+		np := normPath(r.Path)
+		if !seen[np] {
+			paths = append(paths, r.Path)
+			seen[np] = true
+		}
+	}
+
+	// include tmux session paths not already in config
+	for _, e := range d.entries {
+		if e.Path == "" {
+			continue
+		}
+		np := normPath(e.Path)
+		if !seen[np] {
+			paths = append(paths, e.Path)
+			seen[np] = true
+		}
+	}
+
+	if len(paths) == 0 {
 		return
 	}
 
-	paths := make([]string, len(cfg.Repos))
-	for i, r := range cfg.Repos {
-		paths[i] = r.Path
-	}
 	repos := scanRepos(paths, false)
 	saveScanCache(repos)
 	d.applyRepos(repos)
@@ -208,7 +229,7 @@ func (d *dashboard) run() error {
 	amber := Style{FG: RGB(180, 150, 80)}
 	selStyle := Style{BG: RGB(40, 40, 40)}
 
-	d.fl = FilterList(&d.entries, func(e *entry) string { return e.Name }).
+	d.fl = FilterList(&d.entries, func(e *entry) string { return e.Name + " " + e.AmberInfo + " " + e.DimInfo }).
 		Placeholder("search...").
 		MaxVisible(40).
 		SelectedStyle(selStyle).
@@ -281,6 +302,10 @@ func (d *dashboard) updatePreview() {
 	}
 
 	d.preview = d.preview[:0]
+
+	if sel.Remote != "" {
+		d.preview = append(d.preview, pvLine{Dimmed: sel.Remote})
+	}
 
 	if sel.Branch != "" {
 		d.preview = append(d.preview, pvLine{Normal: "branch  " + sel.Branch})

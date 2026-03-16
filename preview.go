@@ -24,6 +24,9 @@ func runPreview(key string) {
 		return
 	}
 
+	if r.Remote != "" {
+		fmt.Println(r.Remote)
+	}
 	fmt.Printf("branch  %s\n", r.Branch)
 
 	if !r.LastCommit.IsZero() {

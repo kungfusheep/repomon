@@ -50,6 +50,7 @@ type Repo struct {
 	TestsPass  *bool
 	TestCount  int
 	Health     Health
+	Remote     string
 	Worktrees  int
 	Error      string
 }
@@ -108,11 +109,15 @@ func scanRepos(paths []string, runBuild bool) []Repo {
 	var repos []Repo
 	var wg sync.WaitGroup
 
+	sem := make(chan struct{}, 16)
+
 	for _, p := range paths {
 		wg.Add(1)
 		go func(path string) {
 			defer wg.Done()
+			sem <- struct{}{}
 			r := scanRepo(path, runBuild)
+			<-sem
 			mu.Lock()
 			repos = append(repos, r)
 			mu.Unlock()
@@ -147,6 +152,7 @@ func scanRepo(path string, runBuild bool) Repo {
 	gitStatus(&r)
 	gitLog(&r)
 	gitAheadBehind(&r)
+	gitRemote(&r)
 	gitWorktrees(&r)
 
 	if runBuild && r.Language == "Go" {
@@ -195,6 +201,29 @@ func gitAheadBehind(r *Repo) {
 		r.Ahead, _ = strconv.Atoi(parts[0])
 		r.Behind, _ = strconv.Atoi(parts[1])
 	}
+}
+
+func gitRemote(r *Repo) {
+	// get the first remote, whatever it's called
+	remotes := strings.TrimSpace(run(r.Path, "git", "remote"))
+	if remotes == "" {
+		return
+	}
+	name := strings.SplitN(remotes, "\n", 2)[0]
+	out := strings.TrimSpace(run(r.Path, "git", "remote", "get-url", name))
+	if out == "" {
+		return
+	}
+	// ssh: git@github.com:owner/repo.git
+	if strings.HasPrefix(out, "git@") {
+		out = strings.TrimPrefix(out, "git@")
+		out = strings.Replace(out, ":", "/", 1)
+	}
+	// https: https://github.com/owner/repo.git
+	out = strings.TrimPrefix(out, "https://")
+	out = strings.TrimPrefix(out, "http://")
+	out = strings.TrimSuffix(out, ".git")
+	r.Remote = out
 }
 
 func gitWorktrees(r *Repo) {
