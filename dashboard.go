@@ -1,34 +1,37 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	. "github.com/kungfusheep/glyph"
 )
 
 type entry struct {
-	Key       string
-	Name      string
-	DimName   string // non-empty for non-session entries (dimmed)
+	Key        string
+	Name       string
+	DimName    string // non-empty for non-session entries (dimmed)
 	BrightName string // non-empty for session entries (normal)
-	Branch    string
-	AmberInfo string // shown in amber when dirty or behind
-	DimInfo   string // shown dimmed when clean
-	Dirty     int
-	Ahead     int
-	Behind    int
-	IsSession bool
-	Path      string
-	Remote    string
-	LastMsg   string
-	Age       string
-	files     string
-	filesInit bool
+	Branch     string
+	AmberInfo  string // shown in amber when dirty or behind
+	DimInfo    string // shown dimmed when clean
+	Dirty      int
+	Ahead      int
+	Behind     int
+	IsSession  bool
+	Path       string
+	Remote     string
+	LastMsg    string
+	Age        string
+	files      string
+	filesInit  bool
 }
 
 type pvLine struct {
@@ -40,9 +43,13 @@ type dashboard struct {
 	entries []entry
 	result  *entry
 	fl      *FilterListC[entry]
+	app     *App
 
-	preview []pvLine
-	status  string
+	preview      []pvLine
+	actionOutput []pvLine
+	actionActive bool
+	lastSelKey   string
+	status       string
 }
 
 func runDashboard() {
@@ -225,6 +232,8 @@ func (d *dashboard) run() error {
 		return err
 	}
 
+	d.app = app
+
 	dim := Style{FG: BrightBlack}
 	amber := Style{FG: RGB(180, 150, 80)}
 	selStyle := Style{BG: RGB(40, 40, 40)}
@@ -301,6 +310,19 @@ func (d *dashboard) updatePreview() {
 		return
 	}
 
+	// clear action output when selection changes
+	if sel.Key != d.lastSelKey {
+		d.actionActive = false
+		d.actionOutput = d.actionOutput[:0]
+		d.lastSelKey = sel.Key
+	}
+
+	// show action output instead of repo info when active
+	if d.actionActive {
+		d.preview = append(d.preview[:0], d.actionOutput...)
+		return
+	}
+
 	d.preview = d.preview[:0]
 
 	if sel.Remote != "" {
@@ -331,21 +353,30 @@ func (d *dashboard) updatePreview() {
 		d.preview = append(d.preview, pvLine{Normal: fmt.Sprintf("%d dirty files:", sel.Dirty)})
 
 		if !sel.filesInit && sel.Path != "" {
-			sel.files = run(sel.Path, "git", "status", "--porcelain")
+			// fetch file list async to avoid blocking the event loop
 			sel.filesInit = true
+			path := sel.Path
+			go func() {
+				sel.files = run(path, "git", "status", "--porcelain")
+				if d.app != nil {
+					d.app.RequestRender()
+				}
+			}()
 		}
-		shown := 0
-		for _, line := range strings.Split(strings.TrimSpace(sel.files), "\n") {
-			if len(line) < 3 {
-				continue
-			}
-			status := strings.TrimRight(line[:2], " ")
-			name := strings.TrimSpace(line[2:])
-			d.preview = append(d.preview, pvLine{Dimmed: "  " + status + " " + name})
-			shown++
-			if shown >= 12 {
-				d.preview = append(d.preview, pvLine{Dimmed: fmt.Sprintf("  +%d more", sel.Dirty-shown)})
-				break
+		if sel.files != "" {
+			shown := 0
+			for _, line := range strings.Split(strings.TrimSpace(sel.files), "\n") {
+				if len(line) < 3 {
+					continue
+				}
+				status := strings.TrimRight(line[:2], " ")
+				name := strings.TrimSpace(line[2:])
+				d.preview = append(d.preview, pvLine{Dimmed: "  " + status + " " + name})
+				shown++
+				if shown >= 12 {
+					d.preview = append(d.preview, pvLine{Dimmed: fmt.Sprintf("  +%d more", sel.Dirty-shown)})
+					break
+				}
 			}
 		}
 	}
@@ -357,7 +388,10 @@ func (d *dashboard) doAction(verb string, app *App) {
 		return
 	}
 
+	d.actionActive = true
+	d.actionOutput = []pvLine{{Normal: verb + "..."}}
 	d.status = verb + "..."
+	app.RequestRender()
 
 	go func() {
 		path := sel.Path
@@ -368,21 +402,60 @@ func (d *dashboard) doAction(verb string, app *App) {
 		switch verb {
 		case "fetch":
 			if path != "" {
-				run(path, "git", "fetch", "--all", "--prune")
+				d.streamCmd(app, path, "git", "fetch", "--all", "--prune")
 			}
 		case "pull":
 			if path != "" {
-				run(path, "git", "pull")
+				d.streamCmd(app, path, "git", "pull")
 			}
 		case "kill":
 			exec.Command("tmux", "kill-session", "-t", sel.Key).Run()
+			d.actionOutput = []pvLine{{Normal: "session killed"}}
+			app.RequestRender()
 		}
 
 		d.enrichWithRepos()
 		d.fl.Refresh()
 		d.status = verb + " done"
 		app.RequestRender()
+
+		time.Sleep(3 * time.Second)
+		d.actionActive = false
+		app.RequestRender()
 	}()
+}
+
+func (d *dashboard) streamCmd(app *App, dir string, name string, args ...string) {
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+
+	pr, pw := io.Pipe()
+	cmd.Stdout = pw
+	cmd.Stderr = pw
+
+	d.actionOutput = []pvLine{{Normal: strings.Join(append([]string{name}, args...), " ")}, {}}
+	app.RequestRender()
+
+	if err := cmd.Start(); err != nil {
+		d.actionOutput = append(d.actionOutput, pvLine{Dimmed: "error: " + err.Error()})
+		app.RequestRender()
+		return
+	}
+
+	go func() {
+		cmd.Wait()
+		pw.Close()
+	}()
+
+	scanner := bufio.NewScanner(pr)
+	for scanner.Scan() {
+		d.actionOutput = append(d.actionOutput, pvLine{Dimmed: scanner.Text()})
+		app.RequestRender()
+	}
+
+	if len(d.actionOutput) == 2 {
+		d.actionOutput = append(d.actionOutput, pvLine{Dimmed: "done (no output)"})
+	}
 }
 
 func (d *dashboard) switchTo() {
