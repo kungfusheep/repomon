@@ -1,8 +1,8 @@
 # repomon
 
-git repo health monitor with a TUI dashboard and tmux session switcher cache.
+git repo health monitor with a TUI dashboard, inline git actions, and tmux session switcher cache.
 
-scans repos in parallel, tracks branch status, dirty files, upstream sync, build/test results, and assigns a health rating.
+scans repos in parallel, tracks branch status, dirty files, upstream sync, build/test results, and assigns a health rating. search across repo names, branches, and status.
 
 ## install
 
@@ -33,16 +33,17 @@ repomon --uninstall-cron         remove launchd job
 
 ## dashboard
 
-two-panel TUI powered by [glyph](https://github.com/kungfusheep/glyph). left panel lists tmux sessions and repos with live search. right panel previews the selected entry — branch, last commit, sync status, dirty files.
+two-panel TUI powered by [glyph](https://github.com/kungfusheep/glyph). left panel lists tmux sessions and repos with fuzzy search across names and git status. right panel shows a live detail view — remote, branch, last commit, sync status, and dirty files.
 
-keybinds:
+git actions run inline with streamed output in the detail panel:
+
 - `enter` — switch to session (creates one if needed)
-- `ctrl-f` — fetch
-- `ctrl-r` — pull
+- `ctrl-f` — fetch (streams output live)
+- `ctrl-r` — pull (streams output live)
 - `ctrl-x` — kill session
 - `esc` — quit
 
-loads instantly from scan cache, then refreshes in the background.
+loads instantly from scan cache, then refreshes in the background. action output auto-clears after 3 seconds.
 
 ## health
 

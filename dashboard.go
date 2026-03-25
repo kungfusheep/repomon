@@ -49,6 +49,9 @@ type dashboard struct {
 	actionOutput []pvLine
 	actionActive bool
 	lastSelKey   string
+	todoContent  string
+	todoPath     string
+	editTodo     bool
 	status       string
 }
 
@@ -62,6 +65,15 @@ func runDashboard() {
 	}
 
 	d.switchTo()
+
+	if d.editTodo && d.todoPath != "" {
+		sel := d.result
+		sessionKey := sel.Key
+		if !sel.IsSession {
+			sessionKey = strings.ReplaceAll(filepath.Base(sel.Key), ".", "_")
+		}
+		exec.Command("tmux", "new-window", "-t", sessionKey, "nvim", d.todoPath).Run()
+	}
 }
 
 // loadTmuxSessions populates entries from tmux sessions only. Instant.
@@ -265,7 +277,7 @@ func (d *dashboard) run() error {
 			HBox.MarginVH(0, 1)(
 				Text("repomon").Bold(),
 				Space(),
-				Text("ctrl-f:fetch  ctrl-r:pull  ctrl-x:kill").Style(dim),
+				Text("ctrl-f:fetch  ctrl-r:pull  ctrl-x:kill  ctrl-t:todo").Style(dim),
 			),
 			HBox.Grow(1)(
 				VBox.WidthPct(0.55)(d.fl),
@@ -273,6 +285,11 @@ func (d *dashboard) run() error {
 					ForEach(&d.preview, func(l *pvLine) any {
 						return Textf(&l.Normal, Dim(&l.Dimmed))
 					}),
+					If(&d.todoContent).Then(
+						VBox.Grow(1).MarginVH(1, 0)(
+							TextView(&d.todoContent).Grow(1),
+						),
+					),
 				),
 			),
 			HBox.MarginVH(0, 1)(
@@ -286,6 +303,14 @@ func (d *dashboard) run() error {
 	app.Handle("<C-f>", func() { d.doAction("fetch", app) })
 	app.Handle("<C-r>", func() { d.doAction("pull", app) })
 	app.Handle("<C-x>", func() { d.doAction("kill", app) })
+	app.Handle("<C-t>", func() {
+		sel := d.fl.Selected()
+		if sel != nil && d.todoPath != "" {
+			d.result = sel
+			d.editTodo = true
+			app.Stop()
+		}
+	})
 
 	go func() {
 		// phase 1: add config entries + enrich from cache (fast)
@@ -307,14 +332,16 @@ func (d *dashboard) updatePreview() {
 	sel := d.fl.Selected()
 	if sel == nil {
 		d.preview = d.preview[:0]
+		d.todoContent = ""
 		return
 	}
 
-	// clear action output when selection changes
+	// clear action output and reload todo when selection changes
 	if sel.Key != d.lastSelKey {
 		d.actionActive = false
 		d.actionOutput = d.actionOutput[:0]
 		d.lastSelKey = sel.Key
+		d.loadTodo(sel.Path)
 	}
 
 	// show action output instead of repo info when active
@@ -353,7 +380,6 @@ func (d *dashboard) updatePreview() {
 		d.preview = append(d.preview, pvLine{Normal: fmt.Sprintf("%d dirty files:", sel.Dirty)})
 
 		if !sel.filesInit && sel.Path != "" {
-			// fetch file list async to avoid blocking the event loop
 			sel.filesInit = true
 			path := sel.Path
 			go func() {
@@ -380,6 +406,51 @@ func (d *dashboard) updatePreview() {
 			}
 		}
 	}
+}
+
+// resolveTodoPath returns the TODO file path for a repo, or empty if not found.
+func resolveTodoPath(repoPath string) string {
+	if repoPath == "" {
+		return ""
+	}
+
+	pattern := os.Getenv("REPOMON_TODO_PATTERN")
+	if pattern == "" {
+		pattern = "{repo}/TODO.md"
+	}
+
+	home, _ := os.UserHomeDir()
+	repoPath = expandHome(repoPath)
+
+	relPath := repoPath
+	if strings.HasPrefix(repoPath, home+"/") {
+		relPath = repoPath[len(home)+1:]
+	}
+
+	todoPath := strings.ReplaceAll(pattern, "{path}", relPath)
+	todoPath = strings.ReplaceAll(todoPath, "{repo}", repoPath)
+	todoPath = expandHome(todoPath)
+
+	if _, err := os.Stat(todoPath); err != nil {
+		return ""
+	}
+	return todoPath
+}
+
+// loadTodo resolves the TODO file for a repo path and loads its content.
+func (d *dashboard) loadTodo(repoPath string) {
+	d.todoContent = ""
+	d.todoPath = resolveTodoPath(repoPath)
+	if d.todoPath == "" {
+		return
+	}
+
+	data, err := os.ReadFile(d.todoPath)
+	if err != nil {
+		d.todoPath = ""
+		return
+	}
+	d.todoContent = string(data)
 }
 
 func (d *dashboard) doAction(verb string, app *App) {
