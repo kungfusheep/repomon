@@ -30,6 +30,8 @@ type entry struct {
 	Remote     string
 	LastMsg    string
 	Age        string
+	ClaudeWork bool   // true when claude is actively working
+	ClaudeIdle string // non-empty when claude is idle
 	files      string
 	filesInit  bool
 }
@@ -50,9 +52,11 @@ type dashboard struct {
 	actionActive bool
 	lastSelKey   string
 	todoContent  string
-	todoPath     string
-	editTodo     bool
-	status       string
+	todoPath       string
+	editTodo       bool
+	spinFrame      int
+	claudeLastPoll time.Time
+	status         string
 }
 
 func runDashboard() {
@@ -177,6 +181,31 @@ func (d *dashboard) applyRepos(repos []Repo) {
 	d.status = fmt.Sprintf("%d sessions · %d repos · %d dirty files", sessionCount, len(repos), totalDirty)
 }
 
+// applyClaudeStatus reads claude status files and updates entries.
+// throttled to once every 500ms.
+func (d *dashboard) applyClaudeStatus() {
+	now := time.Now()
+	if now.Sub(d.claudeLastPoll) < 500*time.Millisecond {
+		return
+	}
+	d.claudeLastPoll = now
+
+	statuses := loadClaudeStatuses()
+	for i := range d.entries {
+		e := &d.entries[i]
+		if e.Path == "" {
+			continue
+		}
+		status := statuses[normPath(e.Path)]
+		e.ClaudeWork = status == "working"
+		if status == "idle" {
+			e.ClaudeIdle = "  ◆ claude"
+		} else if status != "working" {
+			e.ClaudeIdle = ""
+		}
+	}
+}
+
 // enrichFromCache loads cached scan results for instant display.
 func (d *dashboard) enrichFromCache() bool {
 	repos, ok := loadScanCache()
@@ -239,18 +268,16 @@ func buildInfoStr(r Repo) string {
 }
 
 func (d *dashboard) run() error {
-	app, err := NewApp()
-	if err != nil {
-		return err
-	}
+	app := NewApp()
 
 	d.app = app
 
 	dim := Style{FG: BrightBlack}
 	amber := Style{FG: RGB(180, 150, 80)}
+	claude := Style{FG: RGB(200, 150, 50)}
 	selStyle := Style{BG: RGB(40, 40, 40)}
 
-	d.fl = FilterList(&d.entries, func(e *entry) string { return e.Name + " " + e.AmberInfo + " " + e.DimInfo }).
+	d.fl = FilterList(&d.entries, func(e *entry) string { return e.Name + " " + e.AmberInfo + " " + e.DimInfo + " " + e.ClaudeIdle }).
 		Placeholder("search...").
 		MaxVisible(40).
 		SelectedStyle(selStyle).
@@ -260,6 +287,8 @@ func (d *dashboard) run() error {
 				Text(&e.DimName).Style(dim),
 				Text(&e.AmberInfo).Style(amber),
 				Text(&e.DimInfo).Style(dim),
+				If(&e.ClaudeWork).Then(HBox(Text("  "), Spinner(&d.spinFrame).FG(claude.FG), Text(" claude").Style(claude))),
+				Text(&e.ClaudeIdle).Style(dim),
 			)
 		}).
 		Handle("<Enter>", func(e *entry) {
@@ -269,6 +298,7 @@ func (d *dashboard) run() error {
 		HandleClear("<Escape>", app.Stop)
 
 	app.OnBeforeRender(func() {
+		d.applyClaudeStatus()
 		d.updatePreview()
 	})
 
@@ -325,6 +355,16 @@ func (d *dashboard) run() error {
 		app.RequestRender()
 	}()
 
+	// spinner ticker for claude working animation
+	go func() {
+		tick := time.NewTicker(100 * time.Millisecond)
+		defer tick.Stop()
+		for range tick.C {
+			d.spinFrame++
+			app.RequestRender()
+		}
+	}()
+
 	return app.Run()
 }
 
@@ -364,6 +404,12 @@ func (d *dashboard) updatePreview() {
 
 	if sel.LastMsg != "" {
 		d.preview = append(d.preview, pvLine{Dimmed: "commit  " + sel.Age + " - " + sel.LastMsg})
+	}
+
+	if sel.ClaudeWork {
+		d.preview = append(d.preview, pvLine{Normal: "claude  working"})
+	} else if sel.ClaudeIdle != "" {
+		d.preview = append(d.preview, pvLine{Dimmed: "claude  idle"})
 	}
 
 	d.preview = append(d.preview, pvLine{}) // spacer
