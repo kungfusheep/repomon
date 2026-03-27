@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -15,17 +16,19 @@ type claudeStatus struct {
 
 const claudeStatusDir = "/tmp/claude-status"
 
-// loadClaudeStatuses reads all status files and returns a map of cwd -> status.
-// stale entries (> 2 hours) are ignored.
-func loadClaudeStatuses() map[string]string {
-	result := map[string]string{}
+type claudeInfo struct {
+	Status string
+	Ts     time.Time
+}
+
+// loadClaudeStatuses reads all status files and returns a map of cwd -> info.
+func loadClaudeStatuses() map[string]claudeInfo {
+	result := map[string]claudeInfo{}
 
 	entries, err := os.ReadDir(claudeStatusDir)
 	if err != nil {
 		return result
 	}
-
-	cutoff := time.Now().Unix() - 7200
 
 	for _, e := range entries {
 		if e.IsDir() {
@@ -39,12 +42,23 @@ func loadClaudeStatuses() map[string]string {
 		if json.Unmarshal(data, &s) != nil || s.Cwd == "" {
 			continue
 		}
-		if s.Ts < cutoff {
-			continue
+		result[normPath(s.Cwd)] = claudeInfo{
+			Status: s.Status,
+			Ts:     time.Unix(s.Ts, 0),
 		}
-		result[normPath(s.Cwd)] = s.Status
 	}
 
 	return result
+}
+
+func formatIdleDuration(since time.Duration) string {
+	switch {
+	case since < time.Minute:
+		return fmt.Sprintf("%ds", int(since.Seconds()))
+	case since < time.Hour:
+		return fmt.Sprintf("%dm", int(since.Minutes()))
+	default:
+		return fmt.Sprintf("%dh", int(since.Hours()))
+	}
 }
 

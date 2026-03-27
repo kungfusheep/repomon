@@ -25,6 +25,8 @@ func main() {
 		runDiscover(args)
 	case contains(args, "--export"):
 		runExport(args)
+	case contains(args, "--init-claude"):
+		runInitClaude()
 	case contains(args, "--install-cron"):
 		installCron()
 	case contains(args, "--uninstall-cron"):
@@ -112,6 +114,7 @@ usage:
   repomon --discover ~/code [...]  discover repos and save config
   repomon --install-cron           install launchd job for periodic cache refresh
   repomon --uninstall-cron         remove launchd job
+  repomon --init-claude            install claude code hooks for status tracking
 
 flags:
   --cache           scan repos + tmux sessions, write colored cache for fzf
@@ -120,7 +123,8 @@ flags:
   --export          output markdown report instead of TUI
   --output          file path for export (default: stdout)
   --install-cron    install a launchd plist that refreshes cache every 5 minutes
-  --uninstall-cron  unload and remove the launchd plist`)
+  --uninstall-cron  unload and remove the launchd plist
+  --init-claude     install hooks into ~/.claude/settings.json for live status`)
 }
 
 func contains(args []string, flag string) bool {

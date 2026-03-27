@@ -196,11 +196,16 @@ func (d *dashboard) applyClaudeStatus() {
 		if e.Path == "" {
 			continue
 		}
-		status := statuses[normPath(e.Path)]
-		e.ClaudeWork = status == "working"
-		if status == "idle" {
-			e.ClaudeIdle = "  ◆ claude"
-		} else if status != "working" {
+		info, ok := statuses[normPath(e.Path)]
+		if !ok {
+			e.ClaudeWork = false
+			e.ClaudeIdle = ""
+			continue
+		}
+		e.ClaudeWork = info.Status == "working"
+		if info.Status == "idle" {
+			e.ClaudeIdle = "  ◆ claude " + formatIdleDuration(time.Since(info.Ts))
+		} else {
 			e.ClaudeIdle = ""
 		}
 	}
