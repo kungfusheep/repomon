@@ -300,7 +300,8 @@ func (d *dashboard) run() error {
 			d.result = e
 			app.Stop()
 		}).
-		HandleClear("<Escape>", app.Stop)
+		HandleClear("<Escape>", app.Stop).
+		BindNav("<Down>", "<Up>")
 
 	app.OnBeforeRender(func() {
 		d.applyClaudeStatus()
