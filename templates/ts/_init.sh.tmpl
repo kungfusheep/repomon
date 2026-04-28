@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+bun init -y >/dev/null
+# replace the default index.ts with a hello using the project name
+cat > index.ts <<EOF
+console.log("hello, {{name}}")
+EOF

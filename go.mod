@@ -6,6 +6,8 @@ require github.com/kungfusheep/glyph v0.0.0-20260311230619-7020b7d3f9f3
 
 replace github.com/kungfusheep/glyph => ../tui
 
+replace github.com/kungfusheep/riffkey => ../riffkey
+
 require (
 	github.com/BurntSushi/toml v1.6.0 // indirect
 	github.com/clipperhouse/stringish v0.1.1 // indirect

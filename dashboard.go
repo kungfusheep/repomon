@@ -6,9 +6,11 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	. "github.com/kungfusheep/glyph"
@@ -54,6 +56,7 @@ type dashboard struct {
 	todoContent  string
 	todoPath       string
 	editTodo       bool
+	newProjectPath string
 	spinFrame      int
 	claudeLastPoll time.Time
 	status         string
@@ -66,6 +69,11 @@ func runDashboard() {
 	if err := d.run(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %s\n", err)
 		os.Exit(1)
+	}
+
+	if d.newProjectPath != "" {
+		openTmuxSession(d.newProjectPath)
+		return
 	}
 
 	d.switchTo()
@@ -277,6 +285,19 @@ func (d *dashboard) run() error {
 
 	d.app = app
 
+	// register SIGINT so it doesn't terminate; treat it as a stop request.
+	// Used internally by the new-project goroutine to wake the read syscall
+	// (closing stdin doesn't reliably unblock it on macOS). External SIGINT
+	// (kill -INT pid) also stops the dashboard cleanly.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT)
+	go func() {
+		for range sigCh {
+			app.Stop()
+		}
+	}()
+	defer signal.Stop(sigCh)
+
 	dim := Style{FG: BrightBlack}
 	amber := Style{FG: RGB(180, 150, 80)}
 	claude := Style{FG: RGB(200, 150, 50)}
@@ -303,6 +324,9 @@ func (d *dashboard) run() error {
 		HandleClear("<Escape>", app.Stop).
 		BindNav("<Down>", "<Up>")
 
+	app.Handle("<C-j>", func() { d.fl.SelectNext() })
+	app.Handle("<C-k>", func() { d.fl.SelectPrev() })
+
 	app.OnBeforeRender(func() {
 		d.applyClaudeStatus()
 		d.updatePreview()
@@ -313,7 +337,7 @@ func (d *dashboard) run() error {
 			HBox.MarginVH(0, 1)(
 				Text("repomon").Bold(),
 				Space(),
-				Text("ctrl-f:fetch  ctrl-r:pull  ctrl-x:kill  ctrl-t:todo").Style(dim),
+				Text("alt-n:new  ctrl-f:fetch  ctrl-r:pull  ctrl-x:kill  ctrl-t:todo").Style(dim),
 			),
 			HBox.Grow(1)(
 				VBox.WidthPct(0.55)(d.fl),
@@ -347,6 +371,8 @@ func (d *dashboard) run() error {
 			app.Stop()
 		}
 	})
+	registerNewProjectView(app, d)
+	app.Handle("<A-n>", func() { app.PushView("new") })
 
 	go func() {
 		// phase 1: add config entries + enrich from cache (fast)

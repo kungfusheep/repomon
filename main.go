@@ -23,6 +23,8 @@ func main() {
 		}
 	case contains(args, "--discover"):
 		runDiscover(args)
+	case contains(args, "--new"):
+		runNew(args)
 	case contains(args, "--export"):
 		runExport(args)
 	case contains(args, "--init-claude"):
@@ -112,6 +114,7 @@ usage:
   repomon --export                 export markdown to stdout
   repomon --export --output FILE   export to file
   repomon --discover ~/code [...]  discover repos and save config
+  repomon --new <lang> <name>      scaffold a new project, git init, verify, register
   repomon --install-cron           install launchd job for periodic cache refresh
   repomon --uninstall-cron         remove launchd job
   repomon --init-claude            install claude code hooks for status tracking
@@ -124,7 +127,11 @@ flags:
   --output          file path for export (default: stdout)
   --install-cron    install a launchd plist that refreshes cache every 5 minutes
   --uninstall-cron  unload and remove the launchd plist
-  --init-claude     install hooks into ~/.claude/settings.json for live status`)
+  --init-claude     install hooks into ~/.claude/settings.json for live status
+  --new             scaffold a new project: <lang> <name> [--no-switch]
+                    languages: go, ts, js, py, rust, swift, zig, lua, nvim
+                    env: REPOMON_CODE_ROOT, REPOMON_LANG_<LANG>, REPOMON_TEMPLATES_DIR,
+                         REPOMON_GO_MODULE_PREFIX`)
 }
 
 func contains(args []string, flag string) bool {
